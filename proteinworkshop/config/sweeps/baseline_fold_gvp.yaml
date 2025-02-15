@@ -1,0 +1,38 @@
+program: proteinworkshop/train.py
+method: grid
+name: baseline_gc_prediction
+metric:
+  goal: minimize
+  name: val/loss/total
+
+parameters:
+  task:
+    values: [multiclass_graph_classification]
+  dataset:
+    values: [fold_family, fold_superfamily]
+  encoder:
+    values: [gvp]  # Add your new model here
+  optimiser.optimizer.lr:
+    value: 0.0003
+  features:
+    values: [ca_bb] #[ca_base, ca_seq, ca_angles, ca_bb, ca_sc]
+  scheduler:
+    values: [plateau]
+  extras.enforce_tags:
+    value: False
+  +aux_task:
+    values: [none]
+  trainer.max_epochs:
+    value: 150
+  test:
+    value: True
+  decoder.graph_label.dropout:
+    value: 0.5
+
+command:
+  - ${env}
+  - HYDRA_FULL_ERROR=1
+  - WANDB_START_METHOD=thread
+  - python
+  - ${program}
+  - ${args_no_hyphens}

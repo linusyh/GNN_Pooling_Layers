@@ -1,0 +1,60 @@
+program: proteinworkshop/train.py
+method: grid
+name: baseline_inverse_folding
+metric: # Does not matter, as we are using sweep to run the experiment.
+  goal: minimize
+  name: val/loss/total
+
+parameters:
+  task:
+    value: inverse_folding
+
+  dataset:
+    value: cath
+
+  encoder:
+    values: [schnet, egnn, gcpnet, gear_net_edge, tfn, mace]
+
+  features:
+    values: [ca_seq, ca_angles, ca_bb]
+
+  scheduler:
+    value: plateau
+
+  extras.enforce_tags:
+    value: False
+
+  +aux_task:
+    values: [none, nn_structure_torsion, nn_structure_r3]
+
+  trainer.max_epochs:
+    value: 250
+
+  test:
+    value: True
+
+  trainer:
+    value: gpu
+
+  logger:
+    value: wandb
+
+  seed:
+    values: [13, 42, 121]
+
+  name:
+    value: "${hydra:runtime.choices.encoder}_${hydra:runtime.choices.features}_${hydra:runtime.choices.aux_task}_seed_${seed}"
+
+  optimiser.optimizer.lr:
+    value: ${hparams.hparams.lr}
+
+  decoder.residue_type.dropout:
+    value: ${hparams.hparams.decoder_dropout}
+
+command:
+  - ${env}
+  - HYDRA_FULL_ERROR=1
+  - WANDB_START_METHOD=thread
+  - python
+  - ${program}
+  - ${args_no_hyphens}

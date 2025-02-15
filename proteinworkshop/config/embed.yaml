@@ -1,0 +1,37 @@
+# @package _global_
+
+# === 1. Set config parameters ===
+name: "" # default name for the experiment, "" means logger (eg. wandb) will generate a unique name
+seed: 52 # seed for random number generators in pytorch, numpy and python.random
+num_workers: 16 # number of subprocesses to use for data loading.
+
+# === 2. Specify defaults here. Defaults will be overwritten by equivalently named options in this file ===
+defaults:
+  - env: default
+  - dataset: cath
+  - features: ca
+  - encoder: egnn
+  - decoder: default
+  - transforms: none
+  - callbacks: default
+  - extras: default
+  - hydra: default
+  - metrics: default
+  - task: graph_classification
+  - logger: wandb
+  - finetune: default
+  - debug: null
+  - _self_ # see: https://hydra.cc/docs/upgrades/1.0_to_1.1/default_composition_order/. Adding _self_ at bottom means values in this file override defaults.
+
+task_name: "embed"
+
+compile: True
+
+# simply provide checkpoint path and collection name to embed dataset using chroma
+ckpt_path: null # path to checkpoint to load
+collection_name: null # name of embedding collection to curate
+use_cuda_device: True # if True, use an available CUDA device for embedding generation
+cuda_device_index: 0 # if CUDA devices are targeted and available, which available CUDA device to use for embedding generation
+
+embed:
+  split: ["train", "val", "test"]
