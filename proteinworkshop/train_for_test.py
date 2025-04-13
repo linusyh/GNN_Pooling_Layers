@@ -177,29 +177,33 @@ def train_model(
         log.info("Compiling model!")
         model = torch_geometric.compile(model, dynamic=True)
 
+    
     if cfg.get("task_name") == "train":
         log.info("Starting training!")
         trainer.fit(
             model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path")
         )
+    
 
     if cfg.get("test"):
         log.info("Starting testing!")
         if hasattr(datamodule, "test_dataset_names"):
             splits = datamodule.test_dataset_names
             wandb_logger = copy.deepcopy(trainer.logger)
+            
             for i, split in enumerate(splits):
                 dataloader = datamodule.test_dataloader(split)
                 trainer.logger = False
                 log.info(f"Testing on {split} ({i+1} / {len(splits)})...")
                 results = trainer.test(
-                    model=model, dataloaders=dataloader, ckpt_path="best"
+                    model=model, dataloaders=dataloader, ckpt_path="best" #ckpt_path="/home/chang/Projects/GNN/ProteinWorkshop/runs/train/runs/unet_schnet_2_superfamily/checkpoints/epoch_023.ckpt"
                 )[0]
                 results = {f"{k}/{split}": v for k, v in results.items()}
                 log.info(f"{split}: {results}")
                 wandb_logger.log_metrics(results)
         else:
             trainer.test(model=model, datamodule=datamodule, ckpt_path="best")
+            #trainer.test(model=model, datamodule=datamodule, ckpt_path="last")
 
 
 # Load hydra config from yaml files and command line arguments.
@@ -211,6 +215,7 @@ def train_model(
 def _main(cfg: DictConfig) -> None:
     """Load and validate the hydra config."""
     utils.extras(cfg)
+    #print("within _main: config: ", cfg)
     cfg = config.validate_config(cfg)
     train_model(cfg)
 

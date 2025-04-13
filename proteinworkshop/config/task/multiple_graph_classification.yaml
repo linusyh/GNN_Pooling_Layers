@@ -14,8 +14,11 @@ callbacks:
     monitor: val/graph_label/accuracy
     mode: "max"
   model_checkpoint:
-    monitor: val/graph_label/accuracy
+    dirpath: 
+    monitor: val/graph_label/accuracy #val/graph_label/f1_max #val/graph_label/accuracy
     mode: "max"
+    every_n_epochs: 1
+    save_top_k: 5 #-1
 
 task:
   task: "classification"
@@ -30,3 +33,6 @@ task:
     - "graph_label"
   supervise_on:
     - "graph_label"
+
+train:
+  - features: ca_seq

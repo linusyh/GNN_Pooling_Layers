@@ -1,6 +1,6 @@
 program: proteinworkshop/train.py
 method: grid
-name: baseline_gc_schnet_pp_concat
+name: baseline_gc_prediction_egnn
 metric:
   goal: minimize
   name: val/loss/total
@@ -11,9 +11,9 @@ parameters:
   dataset:
     values: [fold_fold] #[fold_family, fold_superfamily, fold_fold]
   encoder:
-    values: [unet_schnet3] #[schnet] #, unet_schnet3, unet_schnet_s] #[schnet, unet_schnet, unet_schnet_2]  # Add your new model here
+    values: [egnn] #, unet_schnet3, unet_schnet_s] #[schnet, unet_schnet, unet_schnet_2]  # Add your new model here
   optimiser.optimizer.lr:
-    value: 0.0001 #0.0003 #0.0001
+    value: 0.0001 #0.001 #0.0003 #0.0001
   features:
     values: [ca_bb] #[ca_base, ca_seq, ca_angles, ca_bb, ca_sc]
   scheduler:

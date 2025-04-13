@@ -9,11 +9,11 @@ parameters:
   task:
     values: [multiclass_graph_classification]
   dataset:
-    values: [fold_family, fold_superfamily]
+    values: [fold_fold, fold_family, fold_superfamily]
   encoder:
     values: [gvp]  # Add your new model here
   optimiser.optimizer.lr:
-    value: 0.0003
+    value: 0.0005
   features:
     values: [ca_bb] #[ca_base, ca_seq, ca_angles, ca_bb, ca_sc]
   scheduler:

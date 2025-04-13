@@ -15,6 +15,7 @@ callbacks:
   model_checkpoint:
     monitor: val/graph_label/accuracy
     mode: "max"
+    save_top_k: 5
 
 task:
   task: "classification"

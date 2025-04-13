@@ -136,7 +136,10 @@ def train_model(
             log.info(cfg.scheduler)
 
     log.info("Instantiating model...")
-    model: L.LightningModule = BenchMarkModel(cfg)
+    # load model from a specified checkpoint path
+    ckpt_path = "/home/chang/Projects/GNN/ProteinWorkshop/runs/train/runs/schnet_baseline_epoch_50/checkpoints/epoch_049.ckpt"
+    model: L.LightningModule = BenchMarkModel.load_from_checkpoint(ckpt_path)
+
 
     if encoder is not None:
         log.info(f"Setting user-defined encoder {encoder}...")
@@ -177,17 +180,21 @@ def train_model(
         log.info("Compiling model!")
         model = torch_geometric.compile(model, dynamic=True)
 
+    '''
     if cfg.get("task_name") == "train":
         log.info("Starting training!")
         trainer.fit(
             model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path")
         )
+    '''
 
     if cfg.get("test"):
         log.info("Starting testing!")
         if hasattr(datamodule, "test_dataset_names"):
             splits = datamodule.test_dataset_names
             wandb_logger = copy.deepcopy(trainer.logger)
+
+
             for i, split in enumerate(splits):
                 dataloader = datamodule.test_dataloader(split)
                 trainer.logger = False
@@ -200,6 +207,7 @@ def train_model(
                 wandb_logger.log_metrics(results)
         else:
             trainer.test(model=model, datamodule=datamodule, ckpt_path="best")
+            #trainer.test(model=model, datamodule=datamodule, ckpt_path="last")
 
 
 # Load hydra config from yaml files and command line arguments.
@@ -211,6 +219,7 @@ def train_model(
 def _main(cfg: DictConfig) -> None:
     """Load and validate the hydra config."""
     utils.extras(cfg)
+    #print("within _main: config: ", cfg)
     cfg = config.validate_config(cfg)
     train_model(cfg)
 

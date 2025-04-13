@@ -13,7 +13,7 @@ parameters:
   encoder:
     values: [unet_schnet_enc_dec_s]  # Add your new model here
   optimiser.optimizer.lr:
-    value: 0.0001
+    value: 0.0005 #0.0001
   features:
     values: [ca_bb] #[ca_base, ca_seq, ca_angles, ca_bb, ca_sc]
   scheduler:

@@ -99,6 +99,7 @@ class UnetSchNetModelConcat(SchNet):
             block = InteractionBlock(hidden_channels, num_gaussians,
                                      num_filters, cutoff)
             self.up_interactions.append(block)
+
         
         '''
         self.lin = ModuleList()

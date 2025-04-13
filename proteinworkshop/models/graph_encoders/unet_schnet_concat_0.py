@@ -12,7 +12,7 @@ from torch_geometric.nn import fps, MLP, GINConv
 from proteinworkshop.features.edges import compute_edges 
 
 
-class UnetSchNetModel3(SchNet):
+class UnetSchNetModelConcat(SchNet):
     def __init__(
         self,
         hidden_channels: int = 128,
@@ -113,8 +113,46 @@ class UnetSchNetModel3(SchNet):
         edge_weight = (batch.pos[u] - batch.pos[v]).norm(dim=-1)
         edge_attr = self.distance_expansion(edge_weight)
         h = h + self.interactions[0](h, batch.edge_index, edge_weight, edge_attr)
-        
-        for i in range(1,len(self.interactions)):
+        #print("******* ======== ******** ======== ********")
+        #print("******* h.shape: ", h.shape)
+        #print("*** batch.shape: ", batch.batch.shape)
+        Hs = [None] * len(self.interactions)
+        Bs = [None] * len(self.interactions)
+        # Initialize Bs and Hs with Struct elements filled with default (empty) tensors
+
+        Hs[0] = h
+        Bs[0] = batch
+        #print("batch.batch: ", batch.batch[0])
+
+        for i in range(1, len(self.interactions)):
+            #print("***** within loop: i =", i)
+            if i % 2 == 0:
+                #print("**** i-1 =", i-1)
+                #print("Bs[",i-1,"].pos.shape:", Bs[i-1].pos.shape)
+                idx = fps(Bs[i-1].pos, Bs[i-1].batch, 0.6) #fps(batch.pos, batch.batch, 0.6)
+                #ADD AGGREGATION
+                #h[idx] = self.reds[i//2-1](h, batch.edge_index)[idx]
+                Hs[i] = self.reds[i//2-1](Hs[i-1], Bs[i-1].edge_index)[idx]
+                #print("Bs[",i-1,"].pos.shape:", Bs[i-1].pos.shape)
+                #print("idx.shape:", idx.shape)
+                Bs[i] = Bs[i-1].clone()
+                Bs[i].pos = Bs[i-1].pos[idx]
+                Bs[i].x = Bs[i-1].x[idx]
+                Bs[i].batch = Bs[i-1].batch[idx]
+                Bs[i].edge_index, Bs[i].edge_type = compute_edges(Bs[i], ['knn_16'])
+                u, v = Bs[i].edge_index
+                edge_weight = (Bs[i].pos[u] - Bs[i].pos[v]).norm(dim=-1)
+                edge_attr = self.distance_expansion(edge_weight)
+                Hs[i] = Hs[i] + self.interactions[i](Hs[i], Bs[i].edge_index, edge_weight, edge_attr)
+            else:
+                #print("**** i-1 =", i-1)
+                Bs[i] = Bs[i-1].clone()
+                Hs[i] = Hs[i-1] + self.interactions[i](Hs[i-1], Bs[i-1].edge_index, edge_weight, edge_attr)
+            #print("***** within the loop: Bs[",i,"].shape:", Bs[i].batch.shape, "Hs[",i,"].shape:", Hs[i].shape)
+
+            #h = h + self.interactions[i](h, Bs[i].edge_index, edge_weight, edge_attr)
+
+            '''
             if i % 2 == 0:
                 idx = fps(batch.pos, batch.batch, 0.6) #fps(batch.pos, batch.batch, 0.6)
                 #ADD AGGREGATION
@@ -129,16 +167,35 @@ class UnetSchNetModel3(SchNet):
                 edge_attr = self.distance_expansion(edge_weight)
                 #h = h[idx]
             h = h + self.interactions[i](h, batch.edge_index, edge_weight, edge_attr)
+            Hs.append(h)
+            Bs.append(batch.clone())
+            #print("within loop, i=", i, ", h.shape: ", h.shape)
+            #print("within loop, i=", i, ", batch.shape: ", batch.batch.shape)
+            '''
 
+        #print("******* after loop, h.shape: ", h.shape)
+        h = torch.nn.Parameter(torch.cat(Hs, dim=0))
+        # batch concat
+        bs = []
+        for i in range(len(Bs)):
+            bs.append(Bs[i].batch)
+            #print("Bs[",i,"].shape: ", Bs[i].batch.shape)
+        #print("******** bs: ", bs)
+        batches = torch.cat(bs, dim=0)
+
+        #print("after concat, h.shape: ", h.shape)
+        #print("after concat, batch.shape: ", bs.shape)
         h = self.lin1(h)
         h = self.act(h)
+        #print("******* after activation, h.shape: ", h.shape)
         h = self.lin2(h)
+        #print("******* after lin2, h.shape: ", h.shape)
 
         return EncoderOutput(
             {
                 "node_embedding": h,
                 "graph_embedding": torch_scatter.scatter(
-                    h, batch.batch, dim=0, reduce=self.readout
+                    h, batches, dim=0, reduce=self.readout
                 ),
             }
         )

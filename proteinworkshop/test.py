@@ -30,41 +30,7 @@ from proteinworkshop.models.base import BenchMarkModel
 graphein.verbose(False)
 lt.monkey_patch()
 
-
-def _num_training_steps(
-    train_dataset: ProteinDataLoader, trainer: L.Trainer
-) -> int:
-    """
-    Returns total training steps inferred from datamodule and devices.
-
-    :param train_dataset: Training dataloader
-    :type train_dataset: ProteinDataLoader
-    :param trainer: Lightning trainer
-    :type trainer: L.Trainer
-    :return: Total number of training steps
-    :rtype: int
-    """
-    if trainer.max_steps != -1:
-        return trainer.max_steps
-
-    dataset_size = (
-        trainer.limit_train_batches
-        if trainer.limit_train_batches not in {0, 1}
-        else len(train_dataset) * train_dataset.batch_size
-    )
-
-    log.info(f"Dataset size: {dataset_size}")
-
-    num_devices = max(1, trainer.num_devices)
-    effective_batch_size = (
-        train_dataset.batch_size
-        * trainer.accumulate_grad_batches
-        * num_devices
-    )
-    return (dataset_size // effective_batch_size) * trainer.max_epochs
-
-
-def train_model(
+def test_model(
     cfg: DictConfig, encoder: Optional[nn.Module] = None
 ):  # sourcery skip: extract-method
     """
@@ -93,8 +59,6 @@ def train_model(
         the config
     :type encoder: Optional[nn.Module]
     """
-    # set seed for random number generators in pytorch, numpy and python.random
-    L.seed_everything(cfg.seed)
 
     log.info(
         f"Instantiating datamodule: <{cfg.dataset.datamodule._target_}..."
@@ -116,25 +80,7 @@ def train_model(
         cfg.trainer, callbacks=callbacks, logger=logger
     )
 
-    if cfg.get("scheduler"):
-        if (
-            cfg.scheduler.scheduler._target_
-            == "flash.core.optimizers.LinearWarmupCosineAnnealingLR"
-            and cfg.scheduler.interval == "step"
-        ):
-            datamodule.setup()  # type: ignore
-            num_steps = _num_training_steps(
-                datamodule.train_dataloader(), trainer
-            )
-            log.info(
-                f"Setting number of training steps in scheduler to: {num_steps}"
-            )
-            cfg.scheduler.scheduler.warmup_epochs = (
-                num_steps / trainer.max_epochs
-            )
-            cfg.scheduler.scheduler.max_epochs = num_steps
-            log.info(cfg.scheduler)
-
+    
     log.info("Instantiating model...")
     model: L.LightningModule = BenchMarkModel(cfg)
 
@@ -177,53 +123,36 @@ def train_model(
         log.info("Compiling model!")
         model = torch_geometric.compile(model, dynamic=True)
 
-    if cfg.get("task_name") == "train":
-        log.info("Starting training!")
-        trainer.fit(
-            model=model, datamodule=datamodule, ckpt_path=cfg.get("ckpt_path")
-        )
-
     if cfg.get("test"):
         log.info("Starting testing!")
         if hasattr(datamodule, "test_dataset_names"):
             splits = datamodule.test_dataset_names
             wandb_logger = copy.deepcopy(trainer.logger)
+
+            # load model from a specified checkpoint path
+            ckpt_path = "/home/chang/Projects/GNN/ProteinWorkshop/runs/train/runs/schnet_baseline_epoch_50/checkpoints/epoch_049.ckpt"
+            model = model.load_from_checkpoint(ckpt_path)
+
             for i, split in enumerate(splits):
                 dataloader = datamodule.test_dataloader(split)
                 trainer.logger = False
                 log.info(f"Testing on {split} ({i+1} / {len(splits)})...")
                 results = trainer.test(
-                    model=model, dataloaders=dataloader, ckpt_path="best"
+                    model=model, dataloaders=dataloader, ckpt_path="last"
                 )[0]
                 results = {f"{k}/{split}": v for k, v in results.items()}
                 log.info(f"{split}: {results}")
                 wandb_logger.log_metrics(results)
         else:
-            trainer.test(model=model, datamodule=datamodule, ckpt_path="best")
+            #trainer.test(model=model, datamodule=datamodule, ckpt_path="best")
+            trainer.test(model=model, datamodule=datamodule, ckpt_path="last")
 
 
-# Load hydra config from yaml files and command line arguments.
-@hydra.main(
-    version_base="1.3",
-    config_path=str(constants.HYDRA_CONFIG_PATH),
-    config_name="train",
-)
 def _main(cfg: DictConfig) -> None:
     """Load and validate the hydra config."""
     utils.extras(cfg)
     cfg = config.validate_config(cfg)
-    train_model(cfg)
-
-
-def _script_main(args: List[str]) -> None:
-    """
-    Provides an entry point for the script dispatcher.
-
-    Sets the sys.argv to the provided args and calls the main train function.
-    """
-    sys.argv = args
-    register_custom_omegaconf_resolvers()
-    _main()
+    test_model(cfg)
 
 
 if __name__ == "__main__":

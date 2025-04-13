@@ -9,7 +9,7 @@ parameters:
   task:
     values: [multiclass_graph_classification]
   dataset:
-    values: [fold_family, fold_superfamily]
+    values: [fold_fold] #[fold_family, fold_superfamily]
   encoder:
     values: [unet_schnet_s]  # Add your new model here
   optimiser.optimizer.lr:
