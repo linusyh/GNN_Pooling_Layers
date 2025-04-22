@@ -183,8 +183,7 @@ class UnetSchNetModelEncDecAdd(SchNet):
                     #     torch_scatter.scatter_add(h[col], row, dim=0, dim_size=h.size(0))
                     # )[idx]
                     node_features_aggregated = torch_scatter.scatter_add(h[row], col, dim=0, dim_size=h.size(0))[idx]
-                    # h = h[idx]
-                    h = self.reds[i//2](node_features_aggregated)
+                    h = h[idx] + self.reds[i//2](node_features_aggregated)
                 pos = pos[idx]
                 graphs = graphs[idx]
                 
