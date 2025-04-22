@@ -12,4 +12,6 @@ mean: null
 std: null
 atomref: null
 fps_prob: 0.6
-sparse: False
+sparse: True
+
+

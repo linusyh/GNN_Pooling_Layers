@@ -11,11 +11,29 @@ import proteinworkshop.models.graph_encoders.layers.gvp as gvp
 from proteinworkshop.models.graph_encoders.components import blocks
 from proteinworkshop.models.utils import get_aggregation
 from proteinworkshop.types import EncoderOutput
-from torch_geometric.nn import fps, MLP, GINConv
-from torch.nn import  Linear, ModuleList, ReLU, Module
-from proteinworkshop.features.edges import compute_edges 
+from torch_geometric.nn import fps, MLP, GINConv, nearest
+from torch.nn import Linear, ModuleList, ReLU, Module
+from proteinworkshop.features.edges import compute_edges
 from torch_scatter import scatter_add
-class UnetGVPGNNModel(torch.nn.Module):
+import graphein.protein.tensor.edges as gp
+import functools
+
+def compute_new_edges(pos, graphs, edge_type):
+    edges = []
+    edge_fn = functools.partial(gp.compute_edges, batch=graphs)
+    edges.append(edge_fn(pos, edge_type))
+    indxs = torch.cat(
+        [
+            torch.ones_like(e_idx[0, :]) * idx
+            for idx, e_idx in enumerate(edges)
+        ],
+        dim=0,
+    ).unsqueeze(0)
+    edges = torch.cat(edges, dim=1)
+
+    return edges, indxs
+
+class UnifiedUnetGVPGNNModel(torch.nn.Module):
     def __init__(
         self,
         s_dim: int = 128,
@@ -28,44 +46,14 @@ class UnetGVPGNNModel(torch.nn.Module):
         num_layers: int = 5,
         pool: str = "sum",
         residual: bool = True,
-        fps_prob: float = 0.6,
+        pooling_strategy: str = "fps",  # "fps", "nearest", "both"
     ):
-        """
-        Initializes an instance of the GVPGNNModel class with the provided
-        parameters.
-
-        :param s_dim: Dimension of the node state embeddings (default: ``128``)
-        :type s_dim: int
-        :param v_dim: Dimension of the node vector embeddings (default: ``16``)
-        :type v_dim: int
-        :param s_dim_edge: Dimension of the edge state embeddings
-            (default: ``32``)
-        :type s_dim_edge: int
-        :param v_dim_edge: Dimension of the edge vector embeddings
-            (default: ``1``)
-        :type v_dim_edge: int
-        :param r_max: Maximum distance for Bessel basis functions
-            (default: ``10.0``)
-        :type r_max: float
-        :param num_bessel: Number of Bessel basis functions (default: ``8``)
-        :type num_bessel: int
-        :param num_polynomial_cutoff: Number of polynomial cutoff basis
-            functions (default: ``5``)
-        :type num_polynomial_cutoff: int
-        :param num_layers: Number of layers in the model (default: ``5``)
-        :type num_layers: int
-        :param pool: Global pooling method to be used
-            (default: ``"sum"``)
-        :type pool: str
-        :param residual: Whether to use residual connections
-            (default: ``True``)
-        :type residual: bool
-        """
         super().__init__()
         _DEFAULT_V_DIM = (s_dim, v_dim)
         _DEFAULT_E_DIM = (s_dim_edge, v_dim_edge)
         self.r_max = r_max
         self.num_layers = num_layers
+        self.pooling_strategy = pooling_strategy
         activations = (F.relu, None)
 
         # Node embedding
@@ -86,7 +74,7 @@ class UnetGVPGNNModel(torch.nn.Module):
             num_polynomial_cutoff=num_polynomial_cutoff,
         )
         self.W_e = ModuleList()
-        for _ in range(num_layers//2):
+        for _ in range(num_layers // 2):
             w_e = torch.nn.Sequential(
                 gvp.LayerNorm((self.radial_embedding.out_dim, 1)),
                 gvp.GVP(
@@ -94,7 +82,8 @@ class UnetGVPGNNModel(torch.nn.Module):
                     _DEFAULT_E_DIM,
                     activations=(None, None),
                     vector_gate=True,
-                ),)
+                ),
+            )
             self.W_e.append(w_e)
         # Stack of GNN layers
         self.layers = torch.nn.ModuleList(
@@ -121,42 +110,20 @@ class UnetGVPGNNModel(torch.nn.Module):
         self.readout = get_aggregation(pool)
 
         self.reds = ModuleList()
-        for _ in range(num_layers//2+1):
+        for _ in range(num_layers // 2 + 1):
             mlp = MLP([s_dim, s_dim, s_dim], act='relu', norm=None)
             self.reds.append(GINConv(nn=mlp, train_eps=False))
-        self.fps_prob = fps_prob
+
+        self.lin_s = ModuleList()
+        self.lin_v = ModuleList()
+        self.act_lin = ReLU()
 
     @property
     def required_batch_attributes(self) -> Set[str]:
-        """Required batch attributes for this encoder.
-
-        - ``edge_index`` (shape ``[2, num_edges]``)
-        - ``pos`` (shape ``[num_nodes, 3]``)
-        - ``x`` (shape ``[num_nodes, num_node_features]``)
-        - ``batch`` (shape ``[num_nodes]``)
-
-        :return: _description_
-        :rtype: Set[str]
-        """
         return {"edge_index", "pos", "x", "batch"}
 
     @jaxtyped(typechecker=typechecker)
     def forward(self, batch: Union[Batch, ProteinBatch]) -> EncoderOutput:
-        """Implements the forward pass of the GVP-GNN encoder.
-
-        Returns the node embedding and graph embedding in a dictionary.
-
-        :param batch: Batch of data to encode.
-        :type batch: Union[Batch, ProteinBatch]
-        :return: Dictionary of node and graph embeddings. Contains
-            ``node_embedding`` and ``graph_embedding`` fields. The node
-            embedding is of shape :math:`(|V|, d)` and the graph embedding is
-            of shape :math:`(n, d)`, where :math:`|V|` is the number of nodes
-            and :math:`n` is the number of graphs in the batch and :math:`d` is
-            the dimension of the embeddings.
-        :rtype: EncoderOutput
-        """
-        # Edge features
         vectors = (
             batch.pos[batch.edge_index[0]] - batch.pos[batch.edge_index[1]]
         )  # [n_edges, 3]
@@ -174,27 +141,43 @@ class UnetGVPGNNModel(torch.nn.Module):
         h_E = self.W_e[0](h_E)
 
         for i, layer in enumerate(self.layers):
-            if (i+1) % 2 == 0:
-                idx = fps(batch.pos, batch.batch, self.fps_prob)
-                h_s = self.reds[(i+1)//2](h_V[0], batch.edge_index)[idx]
-                row, col = batch.edge_index
-                h_v= scatter_add(h_V[1][row], col, dim=0, dim_size=h_V[1].size(0), out = h_V[1])[idx]
-                h_V = (h_s, h_v)
+            if (i + 1) % 2 == 0:
+                if self.pooling_strategy == "fps":
+                    idx = fps(batch.pos, batch.batch, 0.6)
+                elif self.pooling_strategy == "nearest":
+                    mask = torch.ones(len(batch.pos), dtype=torch.bool)
+                    mask[idx] = False
+                    idx_neg = torch.arange(len(batch.pos), device=idx.device)[mask]
+                    s = nearest(batch.pos[idx_neg], batch.pos[idx], batch.batch[idx_neg], batch.batch[idx])
+                    h_s = scatter_add(h_V[0][idx_neg], s, dim=0, dim_size=h_V[0].size(0), out=h_V[0][idx])
+                    h_v = scatter_add(h_V[1][idx_neg], s, dim=0, dim_size=h_V[1].size(0), out=h_V[1][idx])
+                    h_V = (h_s, h_v)
+                elif self.pooling_strategy == "both":
+                    idx = fps(batch.pos, batch.batch, 0.6)
+                    mask = torch.ones(len(batch.pos), dtype=torch.bool)
+                    mask[idx] = False
+                    idx_neg = torch.arange(len(batch.pos), device=idx.device)[mask]
+                    s = nearest(batch.pos[idx_neg], batch.pos[idx], batch.batch[idx_neg], batch.batch[idx])
+                    h_s = scatter_add(h_V[0][idx_neg], s, dim=0, dim_size=h_V[0].size(0), out=h_V[0][idx])
+                    h_v = scatter_add(h_V[1][idx_neg], s, dim=0, dim_size=h_V[1].size(0), out=h_V[1][idx])
+                    h_V = (h_s, h_v)
+
                 batch.pos = batch.pos[idx]
                 batch.x = batch.x[idx]
                 batch.batch = batch.batch[idx]
                 batch.edge_index, batch.edge_type = compute_edges(batch, ['knn_16'])
 
-                # Edge features
                 vectors = (
-                    batch.pos[batch.edge_index[0]] - batch.pos[batch.edge_index[1]])  # [n_edges, 3]
+                    batch.pos[batch.edge_index[0]] - batch.pos[batch.edge_index[1]]
+                )  # [n_edges, 3]
                 lengths = torch.linalg.norm(
-                    vectors, dim=-1, keepdim=True)  # [n_edges, 1]
+                    vectors, dim=-1, keepdim=True
+                )  # [n_edges, 1]
                 h_E = (
                     self.radial_embedding(lengths),
                     torch.nan_to_num(torch.div(vectors, lengths)).unsqueeze_(-2),
-                    )
-                h_E = self.W_e[(i+1)//2-1](h_E)
+                )
+                h_E = self.W_e[(i + 1) // 2 - 1](h_E)
 
             h_V = layer(h_V, batch.edge_index, h_E)
 
@@ -205,8 +188,7 @@ class UnetGVPGNNModel(torch.nn.Module):
                 "node_embedding": out,
                 "graph_embedding": self.readout(
                     out, batch.batch
-                ),  # (n, d) -> (batch_size, d)
-                # "pos": pos  # TODO it is possible to output pos with GVP if needed
+                ),
             }
         )
 

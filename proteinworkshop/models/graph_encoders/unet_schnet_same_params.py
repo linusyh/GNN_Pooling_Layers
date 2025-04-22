@@ -5,13 +5,11 @@ import torch_scatter
 from graphein.protein.tensor.data import ProteinBatch
 from torch_geometric.data import Batch
 from torch_geometric.nn.models import SchNet
-from torch.nn import  Linear, ModuleList, ReLU, MaxUnpool1d, Upsample
 from proteinworkshop.types import EncoderOutput
-from torch_geometric.nn import fps, MLP, GINConv
+from torch_geometric.nn import fps
 import graphein.protein.tensor.edges as gp
 import functools
-from proteinworkshop.features.edges import compute_edges 
-from torch_geometric.nn.models.schnet import InteractionBlock
+from proteinworkshop.models.utils import get_aggregation
 from torch_geometric.nn.pool import nearest
 
 def compute_new_edges(pos, graphs, edge_type):
@@ -29,7 +27,7 @@ def compute_new_edges(pos, graphs, edge_type):
 
     return edges, indxs
 
-class UnetSchNetModelConcat(SchNet):
+class UnetSchNetModelSameParams(SchNet):
     def __init__(
         self,
         hidden_channels: int = 128,
@@ -46,7 +44,6 @@ class UnetSchNetModelConcat(SchNet):
         atomref: Optional[torch.Tensor] = None,
         fps_prob: float = 0.6,
         sparse: bool = False,
-        
     ):
         """
         Initializes an instance of the SchNetModel class with the provided
@@ -87,7 +84,7 @@ class UnetSchNetModelConcat(SchNet):
             std,
             atomref,
         )
-        self.readout = readout
+        self.readout = get_aggregation(readout)
         # Overwrite embbeding
         self.embedding = torch.nn.LazyLinear(hidden_channels)
         # Overwrite atom embedding and final predictor
@@ -95,27 +92,11 @@ class UnetSchNetModelConcat(SchNet):
         self.num_layers = num_layers
         self.fps_prob = fps_prob
         self.sparse = sparse
-
-        
-        self.up_interactions = ModuleList()
-        for _ in range(num_layers-2):
-            #block = InteractionBlock(hidden_channels*2, num_gaussians,
-            #                         num_filters, cutoff)
-            block = InteractionBlock(hidden_channels, num_gaussians,
-                                     num_filters, cutoff)
-            self.up_interactions.append(block)
-
-        
-        '''
-        self.lin = ModuleList()
-    for _ in range(num_layers-2):
-            self.lin.append(Linear(2*hidden_channels, hidden_channels))
-
-        self.act_lin = ReLU()
-        '''
-
-        #self.unpool = MaxUnpool1d(kernel_size=2, stride=2)
-        #self.upsample = Upsample(scale_factor=2, mode="nearest")
+        self.num_ups = len(self.interactions) // 2
+        # self.concat_merging_layers = torch.nn.ModuleList(
+        #     torch.nn.Linear(2*hidden_channels, hidden_channels) for _ in range(self.num_ups)
+        # )
+        # self.concat_merging_layer = torch.nn.Linear(2*hidden_channels, hidden_channels, bias=False)
 
     @property
     def required_batch_attributes(self) -> Set[str]:
@@ -152,63 +133,60 @@ class UnetSchNetModelConcat(SchNet):
         stack_down_h = []
         stack_down_batch = []
         stack_down_pos = []
-        idx = torch.arange(batch.x.size(0), dtype=torch.long, device=batch.x.device)
-        stack_down_idx.append(idx)
+        
         h = self.embedding(batch.x)
-        u, v = batch.edge_index
         edge_index = batch.edge_index
-        edge_weight = (batch.pos[u] - batch.pos[v]).norm(dim=-1)
-        pos = batch.pos
         graphs = batch.batch
-        edge_attr = self.distance_expansion(edge_weight)
-        h = h + self.interactions[0](h, batch.edge_index, edge_weight, edge_attr)
-        for i in range(1,len(self.interactions)):
-            if i % 2 == 0:
-                stack_down_edges.append(edge_index)
-                stack_down_h.append(h)
-                stack_down_batch.append(graphs)
-                stack_down_pos.append(pos)
-                idx = fps(pos, graphs, self.fps_prob)
-                stack_down_idx.append(idx)
-                mask = torch.ones(len(pos), dtype=torch.bool)
-                mask[idx] = False
-                if self.sparse:
-                    s = nearest(pos[mask], pos[idx], graphs[mask], graphs[idx])
-                    h = torch_scatter.scatter_add(h[mask], s, dim=0, dim_size=h.size(0), out = h[idx])
-                else:
-                    row, col = edge_index
-                    h = torch_scatter.scatter_add(h[row], col, dim=0, dim_size=h.size(0), out=h)[idx]
-                pos = pos[idx]
-                graphs = graphs[idx]
-                edge_index, _ = compute_new_edges(pos, graphs, 'knn_16')
-                u, v = edge_index
-                edge_weight = (pos[u] - pos[v]).norm(dim=-1)
-                edge_attr = self.distance_expansion(edge_weight)
+        pos = batch.pos
+        idx = torch.arange(batch.x.size(0), dtype=torch.long, device=batch.x.device)
+
+        for i in range(self.num_ups):
+            stack_down_edges.append(edge_index)
+            stack_down_h.append(h)
+            stack_down_batch.append(graphs)
+            stack_down_pos.append(pos)
+            
+            # Pooling: node selection
+            idx = fps(pos, graphs, self.fps_prob)
+            stack_down_idx.append(idx)
+            mask = torch.ones(len(pos), dtype=torch.bool, device=idx.device)
+            mask[idx] = False
+            # Pooling
+            if self.sparse:
+                s = nearest(pos[mask], pos[idx], graphs[mask], graphs[idx])
+                h = torch_scatter.scatter_add(h[mask], s, dim=0, dim_size=h.size(0), out = h[idx])
+            else:
+                row, col = edge_index
+                h = torch_scatter.scatter_add(h[row], col, dim=0, dim_size=h.size(0), out=h)[idx]
+            # Keep only pooled nodes
+            pos = pos[idx]
+            graphs = graphs[idx]
+            edge_index, _ = compute_new_edges(pos, graphs, 'knn_16')
+            u, v = edge_index
+            edge_weight = (pos[u] - pos[v]).norm(dim=-1)
+            edge_attr = self.distance_expansion(edge_weight)
 
             h = h + self.interactions[i](h, edge_index, edge_weight, edge_attr)
             
-        for i in range(0,self.num_layers-2):
-            if i % 2 == 0:
-                idx = stack_down_idx.pop()
-                pos = stack_down_pos.pop()
-                graphs = stack_down_batch.pop()
-                h_skip = stack_down_h.pop()
-                edge_index = stack_down_edges.pop()
+        for i in range(self.num_ups, 2*self.num_ups):
+            idx = stack_down_idx.pop()
+            pos = stack_down_pos.pop()
+            graphs = stack_down_batch.pop()
+            h_skip = stack_down_h.pop()
+            edge_index = stack_down_edges.pop()
 
-                u, v = edge_index
-                edge_weight = (pos[u] - pos[v]).norm(dim=-1)
-                edge_attr = self.distance_expansion(edge_weight)
-                h_zero = torch.zeros(h_skip.shape[0] - h.shape[0], self.hidden_channels, device=h.device)
-                mask = torch.ones(h_skip.shape[0], dtype=torch.bool, device=h.device)
-                mask[idx] = False
+            u, v = edge_index
+            edge_weight = (pos[u] - pos[v]).norm(dim=-1)
+            edge_attr = self.distance_expansion(edge_weight)
+            mask = torch.ones(h_skip.shape[0], dtype=torch.bool, device=h.device)
+            mask[idx] = False
 
-                h_new = torch.zeros(h_skip.shape[0], self.hidden_channels, device=h.device)
-                h_new[idx] = torch.add(h, h_skip[idx])
-                h_new[mask] = torch.add(h_zero, h_skip[mask])
-                
-                h = h_new
+            h_new = h_skip  #  Adding skip connect
+            h_new[idx] += h  #  
+            h = h_new + self.interactions[i](h_new, edge_index, edge_weight, edge_attr)
 
-            h = h + self.up_interactions[i](h, edge_index, edge_weight, edge_attr)
+        if self.num_ups % 2 == 1:
+            h = h + self.interactions[-1](h, edge_index, edge_weight, edge_attr)
 
         h = self.lin1(h)
         h = self.act(h)
@@ -217,9 +195,9 @@ class UnetSchNetModelConcat(SchNet):
         return EncoderOutput(
             {
                 "node_embedding": h,
-                "graph_embedding": torch_scatter.scatter(
-                    h, batch.batch, dim=0, reduce=self.readout
-                ),
+                "graph_embedding": self.readout(
+                    h, batch.batch
+                )
             }
         )
 

@@ -8,9 +8,8 @@ from torch_geometric.nn.models import SchNet
 from torch.nn import  Linear, ModuleList, Module, ReLU
 from proteinworkshop.types import EncoderOutput
 from torch_geometric.nn import fps, MLP, GINConv
+from proteinworkshop.utils.graph import compute_new_edges
 
-
-from proteinworkshop.features.edges import compute_edges
 
 class SimpleMLP(Module):
     def __init__(self, hidden_channels):
@@ -26,8 +25,6 @@ class SimpleMLP(Module):
         return x
 
 
-def compute_new_edges(pos, graphs, edge_type):
-    return 0,0
 class UnetSchNetModelEncDec2(SchNet):
     def __init__(
         self,
@@ -83,6 +80,12 @@ class UnetSchNetModelEncDec2(SchNet):
             std,
             atomref,
         )
+        
+        self.lin_transformations = ModuleList()
+        for _ in range(num_layers//2 - 1):
+            lin= Linear(hidden_channels, hidden_channels)
+            self.lin_transformations.append(lin)
+        
         self.readout = readout
         # Overwrite embbeding
         self.embedding = torch.nn.LazyLinear(hidden_channels)
@@ -125,6 +128,7 @@ class UnetSchNetModelEncDec2(SchNet):
         :rtype: EncoderOutput
         """
         prev_idx = torch.arange(batch.x.size(0), dtype=torch.long, device=batch.x.device)
+        new_prev_idx = prev_idx
         stack_down_idx = []
         stack_down_edges = []
         h = self.embedding(batch.x)
@@ -133,7 +137,7 @@ class UnetSchNetModelEncDec2(SchNet):
         edge_weight = (batch.pos[u] - batch.pos[v]).norm(dim=-1)
         edge_attr = self.distance_expansion(edge_weight)
         h = h + self.interactions[0](h, batch.edge_index, edge_weight, edge_attr)
-        for i in range(1,len(self.interactions)/2):
+        for i in range(1,len(self.interactions)//2):
             if i % 2 == 0:
                 idx = fps(batch.pos, batch.batch, 0.6)
                 row, col = edge_index
@@ -141,10 +145,10 @@ class UnetSchNetModelEncDec2(SchNet):
                 node_features_aggregated = torch_scatter.scatter_add(h[row], col, dim=0, dim_size=h.size(0)) + \
                     torch_scatter.scatter_add(h[col], row, dim=0, dim_size=h.size(0))
                 h[new_prev_idx] = self.reds[i//2-1](node_features_aggregated[new_prev_idx] + h[new_prev_idx])
-                h[new_prev_idx] = self.reds[i//2-1](h, batch.edge_index)[new_prev_idx]
+                # h[new_prev_idx] = self.reds[i//2-1](h, batch.edge_index)[new_prev_idx]
                 pos = batch.pos[new_prev_idx]
                 graphs = batch.batch[new_prev_idx]
-                edge_index, _ = compute_new_edges(pos, graphs, ['knn_16'])
+                edge_index, _ = compute_new_edges(pos, graphs, 'knn_16')
                 u, v = edge_index
                 edge_weight = (pos[u] - pos[v]).norm(dim=-1)
                 edge_attr = self.distance_expansion(edge_weight)
@@ -160,7 +164,7 @@ class UnetSchNetModelEncDec2(SchNet):
             stack_down_idx.append(prev_idx)
             stack_down_edges.append(edge_index)
 
-        for i in range(len(self.interactions)/2,len(self.interactions)):
+        for i in range(len(self.interactions)//2,len(self.interactions)):
             idx = stack_down_idx.pop()
             edge_index = stack_down_edges.pop()
             pos = batch.pos[new_prev_idx]

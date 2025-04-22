@@ -1,4 +1,4 @@
-_target_: proteinworkshop.models.graph_encoders.unet_gvp_concat.UnetGVPGNNModel_Concat
+_target_: proteinworkshop.models.graph_encoders.unet_gvp_enc_dec_add.UnetGVPGNNModel_Enc_Dec_Add
 s_dim: 128  # Dimension of the node state embeddings
 v_dim: 16  # Dimension of the node vector embeddings
 s_dim_edge: 32  # Dimension of the edge scalar embeddings
@@ -10,4 +10,4 @@ num_layers: 5  # Number of layers in the model
 pool: "sum"  # Global pooling method to be used
 residual: True  # Whether to use residual connections
 fps_prob: 0.6
-sparse: False
+sparse: True

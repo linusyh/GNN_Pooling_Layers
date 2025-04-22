@@ -74,6 +74,11 @@ class UnetSchNetModelEncDec(SchNet):
         self.embedding = torch.nn.LazyLinear(hidden_channels)
         # Overwrite atom embedding and final predictor
         self.lin2 = torch.nn.LazyLinear(out_dim)
+        
+        self.lin_transformations = ModuleList()
+        for _ in range(num_layers//2 - 1):
+            lin= Linear(hidden_channels, hidden_channels)
+            self.lin_transformations.append(lin)
 
         self.reds = ModuleList()
         for _ in range(num_layers//4 - 1):
@@ -119,7 +124,7 @@ class UnetSchNetModelEncDec(SchNet):
         edge_weight = (batch.pos[u] - batch.pos[v]).norm(dim=-1)
         edge_attr = self.distance_expansion(edge_weight)
         h = h + self.interactions[0](h, batch.edge_index, edge_weight, edge_attr)
-        for i in range(1,len(self.interactions)/2):
+        for i in range(1,len(self.interactions)//2):
             if i % 2 == 0:
                 idx = fps(batch.pos, batch.batch, 0.6)
                 new_prev_idx = prev_idx[idx]
@@ -142,7 +147,7 @@ class UnetSchNetModelEncDec(SchNet):
             stack_down_idx.append(prev_idx)
             stack_down_edges.append(edge_index)
 
-        for i in range(len(self.interactions)/2,len(self.interactions)):
+        for i in range(len(self.interactions)//2,len(self.interactions)):
             idx = stack_down_idx.pop()
             edge_index = stack_down_edges.pop()
             pos = batch.pos[new_prev_idx]

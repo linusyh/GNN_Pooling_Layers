@@ -10,4 +10,4 @@ num_layers: 5  # Number of layers in the model
 pool: "sum"  # Global pooling method to be used
 residual: True  # Whether to use residual connections
 fps_prob: 0.6
-sparse: False
+sparse: True

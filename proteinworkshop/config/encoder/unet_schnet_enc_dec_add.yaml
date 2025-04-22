@@ -1,4 +1,4 @@
-_target_: proteinworkshop.models.graph_encoders.unet_schnet_same_params.UnetSchNetModelSameParams
+_target_: proteinworkshop.models.graph_encoders.unet_schnet_enc_dec_add.UnetSchNetModelEncDecAdd
 hidden_channels: 512 # Number of channels in the hidden layers
 out_dim: 32 # Output dimension of the model
 num_layers: 6 # Number of filters used in convolutional layers

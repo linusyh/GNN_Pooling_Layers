@@ -105,8 +105,21 @@ class UnetGVPGNNModel_Enc_Dec_Con(torch.nn.Module):
             num_bessel=num_bessel,
             num_polynomial_cutoff=num_polynomial_cutoff,
         )
+        
+        self.W_e = torch.nn.Sequential(
+            gvp.LayerNorm((self.radial_embedding.out_dim, 1)),
+            gvp.GVP(
+                (self.radial_embedding.out_dim, 1),
+                _DEFAULT_E_DIM,
+                activations=(None, None),
+                vector_gate=True,
+            ),
+        )
+        
+        self.num_pools = (num_layers + 1) // 2
+        
         self.W_e_d = ModuleList()
-        for _ in range(num_layers//2):
+        for _ in range(num_layers):
             w_e = torch.nn.Sequential(
                 gvp.LayerNorm((self.radial_embedding.out_dim, 1)),
                 gvp.GVP(
@@ -118,7 +131,7 @@ class UnetGVPGNNModel_Enc_Dec_Con(torch.nn.Module):
             self.W_e_d.append(w_e)
 
         self.W_e_up = ModuleList()
-        for _ in range(num_layers//2):
+        for _ in range(num_layers):
             w_e = torch.nn.Sequential(
                 gvp.LayerNorm((self.radial_embedding.out_dim, 1)),
                 gvp.GVP(
@@ -128,7 +141,7 @@ class UnetGVPGNNModel_Enc_Dec_Con(torch.nn.Module):
                     vector_gate=True,
                 ),)
             self.W_e_up.append(w_e)
-
+        
         # Stack of GNN layers
         self.layers_d = torch.nn.ModuleList(
             gvp.GVPConvLayer(
@@ -138,10 +151,10 @@ class UnetGVPGNNModel_Enc_Dec_Con(torch.nn.Module):
                 vector_gate=True,
                 residual=residual,
             )
-            for _ in range(num_layers)
+            for _ in range(self.num_pools)
         )
 
-        self.layers_u = torch.nn.ModuleList(
+        self.layers_up = torch.nn.ModuleList(
             gvp.GVPConvLayer(
                 _DEFAULT_V_DIM,
                 _DEFAULT_E_DIM,
@@ -149,7 +162,7 @@ class UnetGVPGNNModel_Enc_Dec_Con(torch.nn.Module):
                 vector_gate=True,
                 residual=residual,
             )
-            for _ in range(4)
+            for _ in range(self.num_pools)
         )
         # Output GVP
         self.W_out = torch.nn.Sequential(
@@ -165,7 +178,7 @@ class UnetGVPGNNModel_Enc_Dec_Con(torch.nn.Module):
         self.readout = get_aggregation(pool)
 
         self.reds = ModuleList()
-        for _ in range(num_layers//2+1):
+        for _ in range(self.num_pools):
             mlp = MLP([s_dim, s_dim, s_dim], act='relu', norm=None)
             self.reds.append(GINConv(nn=mlp, train_eps=False))
         self.lin = ModuleList()
@@ -239,16 +252,16 @@ class UnetGVPGNNModel_Enc_Dec_Con(torch.nn.Module):
         edge_index = batch.edge_index
 
         for i, layer in enumerate(self.layers_d):
-            if (i+1) % 2 == 0:
+            if i % 2 == 0:
                 stack_down_h_V.append(h_V)
                 stack_down_batch.append(graphs)
                 stack_down_pos.append(pos)
                 stack_down_edges.append(edge_index)
-                idx = fps(batch.pos, batch.batch, 0.6)
+                idx = fps(pos, graphs, 0.6)
                 stack_down_idx.append(idx)
                 
-                h_s = self.reds[(i+1)//2](h_V[0], batch.edge_index)[idx]
-                row, col = batch.edge_index
+                h_s = self.reds[i//2](h_V[0], edge_index)[idx]
+                row, col = edge_index
                 h_v= scatter_add(h_V[1][row], col, dim=0, dim_size=h_V[1].size(0), out = h_V[1])[idx]
                 h_V = (h_s, h_v)
                 pos = pos[idx]
@@ -265,14 +278,15 @@ class UnetGVPGNNModel_Enc_Dec_Con(torch.nn.Module):
                     self.radial_embedding(lengths),
                     torch.nan_to_num(torch.div(vectors, lengths)).unsqueeze_(-2),
                     )
-                h_E = self.W_e_d[(i+1)//2-1](h_E)
-
+                h_E = self.W_e_d[i//2](h_E)
             h_V = layer(h_V, edge_index, h_E)
+        
         for i, layer in enumerate(self.layers_up):
             if i % 2 == 0:
                 h_V_skip = stack_down_h_V.pop()
                 graphs = stack_down_batch.pop()
                 pos = stack_down_pos.pop()
+                idx = stack_down_idx.pop()
                 edge_index = stack_down_edges.pop()
                 vectors = (
                     pos[edge_index[0]] - pos[edge_index[1]])  # [n_edges, 3]
@@ -282,25 +296,27 @@ class UnetGVPGNNModel_Enc_Dec_Con(torch.nn.Module):
                     self.radial_embedding(lengths),
                     torch.nan_to_num(torch.div(vectors, lengths)).unsqueeze_(-2),
                     )
-                h_E = self.W_e_up[(i+1)//2](h_E)
+                h_E = self.W_e_up[i//2](h_E)
+                h_s, h_v = h_V
+                h_s_skip, h_v_skip = h_V_skip
 
-                h_zero_s = torch.zeros(h_V_skip[0].shape[0] - h_V[0].shape[0], h_V_skip[0].shape[0], device=h_V[0].device)
-                h_zero_v = torch.zeros(h_V_skip[1].shape[0] - h_V[1].shape[0], h_V_skip[1].shape[0], device=h_V[1].device)
-
-                mask_s = torch.ones(h_V_skip[0].shape[0], dtype=torch.bool, device=h_V[0].device)
+                mask_s = torch.ones(h_s_skip.shape[0], dtype=torch.bool, device=h_s.device)
                 mask_s[idx] = False
 
-                mask_v = torch.ones(h_V_skip[1].shape[0], dtype=torch.bool, device=h_V[1].device)
+                mask_v = torch.ones(h_v_skip.shape[0], dtype=torch.bool, device=h_v.device)
                 mask_v[idx] = False
                 
-                h_new_s = torch.zeros(h_V_skip[0].shape[0], 2 * h_V_skip[0], device=h_V[0].device)
-                h_new_v = torch.zeros(h_V_skip[1].shape[0], 2 * h_V_skip[1], device=h_V[1].device)
+                h_new_s = torch.zeros(h_s_skip.shape[0], h_s_skip.shape[1]+h_s.shape[1], device=h_s.device)
+                h_new_v = torch.zeros(h_v_skip.shape[0], h_v_skip.shape[1]+h_v.shape[1], h_v_skip.shape[2], device=h_v.device)
 
-                h_new_s[idx] = torch.cat((h_V[0], h_V_skip[0][idx]), dim=1)
-                h_new_v[idx] = torch.cat((h_V[1], h_V_skip[1][idx]), dim=1)
-
-                h_new_s[mask_s] = torch.cat((h_zero_s, h_V_skip[0][mask_s]), dim=1)
-                h_new_v[mask_v] = torch.cat((h_zero_v, h_V_skip[1][mask_v]), dim=1)
+                h_new_s[idx] = torch.cat((h_s, h_s_skip[idx]), dim=1)
+                h_new_v[idx] = torch.cat((h_v, h_v_skip[idx]), dim=1)
+                # print(f"h_s={h_s.shape}, h_s_skip={h_s_skip.shape}, h_new_s={h_new_s.shape}")
+                # print(f"h_v={h_v.shape}, h_v_skip={h_v_skip.shape}, h_new_v={h_new_v.shape}")
+                # print(h_s.shape[1]-1)
+                # print(h_new_s[mask_s][:, h_s.shape[1]:].shape)
+                h_new_s[mask_s][:, h_s.shape[1]:] = h_s_skip[mask_s]
+                h_new_v[mask_v][:, h_v.shape[1]:] = h_v_skip[mask_v]
                 
                 h_s = h_new_s
                 h_v = h_new_v

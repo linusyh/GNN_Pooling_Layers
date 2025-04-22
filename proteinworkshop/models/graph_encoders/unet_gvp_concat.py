@@ -12,8 +12,8 @@ from proteinworkshop.models.graph_encoders.components import blocks
 from proteinworkshop.models.utils import get_aggregation
 from proteinworkshop.types import EncoderOutput
 from torch_geometric.nn import fps, MLP, GINConv
-from torch.nn import  Linear, ModuleList, ReLU, Module
-from proteinworkshop.features.edges import compute_edges 
+from torch_geometric.nn.pool import nearest
+from torch.nn import ModuleList, ReLU
 from torch_scatter import scatter_add
 import graphein.protein.tensor.edges as gp
 import functools
@@ -21,20 +21,7 @@ import functools
 from torch_geometric.nn.models.schnet import InteractionBlock
 
 
-def compute_new_edges(pos, graphs, edge_type):
-    edges = []
-    edge_fn = functools.partial(gp.compute_edges, batch=graphs)
-    edges.append(edge_fn(pos, edge_type))
-    indxs = torch.cat(
-        [
-            torch.ones_like(e_idx[0, :]) * idx
-            for idx, e_idx in enumerate(edges)
-        ],
-        dim=0,
-    ).unsqueeze(0)
-    edges = torch.cat(edges, dim=1)
 
-    return edges, indxs
 
 
 class UnetGVPGNNModel_Concat(torch.nn.Module):
@@ -50,6 +37,8 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
         num_layers: int = 5,
         pool: str = "sum",
         residual: bool = True,
+        fps_prob: float = 0.6,
+        sparse: bool = False,
     ):
         """
         Initializes an instance of the GVPGNNModel class with the provided
@@ -88,6 +77,8 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
         #_DEFAULT_V_DIM_UP = (s_dim*2, v_dim*2)
         self.r_max = r_max
         self.num_layers = num_layers
+        self.fps_prob = fps_prob
+        self.sparse = sparse
         activations = (F.relu, None)
 
         # Node embedding
@@ -119,20 +110,6 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
                 ),)
             self.W_e_d.append(w_e)
 
-        '''
-        self.W_e_up = ModuleList()
-        for _ in range(num_layers//2):
-            w_e = torch.nn.Sequential(
-                gvp.LayerNorm((self.radial_embedding.out_dim, 1)),
-                gvp.GVP(
-                    (self.radial_embedding.out_dim, 1),
-                    _DEFAULT_E_DIM,
-                    activations=(None, None),
-                    vector_gate=True,
-                ),)
-            self.W_e_up.append(w_e)
-        '''
-
         # Stack of GNN layers
         self.layers_d = torch.nn.ModuleList(
             gvp.GVPConvLayer(
@@ -144,19 +121,6 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
             )
             for _ in range(num_layers)
         )
-        '''_DEFAULT_E_DIM,'''
-        '''
-        self.layers_up = torch.nn.ModuleList(
-            gvp.GVPConvLayer(
-                _DEFAULT_V_DIM,
-                (8, 1),
-                activations=activations,
-                vector_gate=True,
-                residual=residual,
-            )
-            for _ in range(4)
-        )
-        '''
 
         num_gaussians = 8
         cutoff = 10
@@ -168,7 +132,6 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
                                      num_filters, cutoff)
             self.up_interactions.append(block)
         
-
         # Output GVP
         self.W_out = torch.nn.Sequential(
             gvp.LayerNorm(_DEFAULT_V_DIM),
@@ -260,11 +223,17 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
                 stack_down_edges.append(edge_index)
                 stack_down_idx.append(idx)
                 idx = fps(pos, graphs, 0.6)
-                
-                
-                h_s = self.reds[i//2-1](h_V[0], edge_index)[idx]
-                row, col = edge_index
-                h_v= scatter_add(h_V[1][row], col, dim=0, dim_size=h_V[1].size(0), out = h_V[1])[idx]
+                if self.sparse:
+                    mask = torch.ones(len(pos), dtype=torch.bool, device=idx.device)
+                    mask[idx] = False
+                    # idx_neg = torch.arange(len(pos), device=idx.device)[mask]
+                    s = nearest(pos[mask], pos[idx], graphs[mask], graphs[idx])
+                    h_s = scatter_add(h_V[0][mask], s, dim=0, dim_size=h_V[0].size(0), out = h_V[0][idx])
+                    h_v = scatter_add(h_V[1][mask], s, dim=0, dim_size=h_V[1].size(0), out = h_V[1][idx])
+                else:
+                    row, col = edge_index
+                    h_s = self.reds[i//2-1](h_V[0], edge_index)[idx]
+                    h_v= scatter_add(h_V[1][row], col, dim=0, dim_size=h_V[1].size(0), out = h_V[1])[idx]
                 h_V = (h_s, h_v)
                 pos = pos[idx]
                 graphs = graphs[idx]
@@ -284,9 +253,7 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
 
             h_V = layer(h_V, edge_index, h_E)
 
-        #for i, layer in enumerate(self.layers_up):
-        #print("***** before the 2nd loop: len(self.layers_up): ", len(self.layers_up))
-        #print("**** self.num_layers: ", self.num_layers)
+
         for i in range(self.num_layers-1):
             if i % 2 == 0:
                 h_V_skip = stack_down_h_V.pop()
@@ -296,13 +263,6 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
                 h_v[idx] = h_V_skip[1][idx] + h_V[1]
                 h_V = (h_s, h_v)
 
-                
-                #print("within the 2nd loop: i=",i)
-                #print("h_V[0].shape: ", h_V[0].shape)
-                #print("h_V[1].shape: ", h_V[1].shape)
-                #print("h_s.shape: ", h_s.shape)
-                #print("h_v.shape: ", h_v.shape)
-
                 graphs = stack_down_batch.pop()
                 pos = stack_down_pos.pop()
                 idx = stack_down_idx.pop()
@@ -311,42 +271,16 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
                     pos[edge_index[0]] - pos[edge_index[1]])  # [n_edges, 3]
                 lengths = torch.linalg.norm(
                     vectors, dim=-1, keepdim=True)  # [n_edges, 1]
-                #print("lengths.shape: ", lengths.shape)
-                #print("vectors.shape: ", vectors.shape)
+                
                 h_E = (
                     self.radial_embedding(lengths),
                     torch.nan_to_num(torch.div(vectors, lengths)).unsqueeze_(-2),
                     )
-                #print("before W_e_up: h_E[0].shape:", h_E[0].shape)
-                #h_E = self.W_e_up[i//2](h_E)
-                #print("after W_e_up: h_E[0].shape: ", h_E[0].shape)
                 
-            '''
-            print("****** before layer in the 2nd loop: ")
-            print("h_V[0].shape: ", h_V[0].shape)
-            print("h_V[1].shape: ", h_V[1].shape)
-            #h_V = layer(h_V, edge_index, h_E)
-            print("****** after layer the 2nd loop: ")
-            print("h_V[0].shape: ", h_V[0].shape)
-            print("h_V[1].shape: ", h_V[1].shape)
-            '''
-
-            #print("****** within the 2nd loop: ")
-            #print("h_V[0].shape: ", h_V[0].shape)
-            #print("h_V[1].shape: ", h_V[1].shape)
-            #print("edge_index.shape: ", edge_index.shape)
-            #print("vectors.shape: ", vectors.shape)
-            #print("lengths.shape: ", lengths.shape)
-            #print("self.radial_embedding(lengths).shape", self.radial_embedding(lengths).shape)
             h_s = h_V[0]
             h_v = h_V[1]
             h_s = h_s + self.up_interactions[i](h_s, edge_index, lengths, self.radial_embedding(lengths))
             h_V = (h_s, h_v)
-            
-            #print("within the 2nd loop: i=",i, " pos.shape: ", pos.shape)
-
-        #a = a
-
         out = self.W_out(h_V)
 
         return EncoderOutput(
