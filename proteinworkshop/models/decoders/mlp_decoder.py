@@ -19,6 +19,8 @@ class LinearSkipBlock(nn.Module):
         out_dim: int,
         dropout: float = 0.0,
         skip: Literal["sum", "concat"] = "sum",
+        batch_norm: bool = False,
+        batch_norm_output: bool = False
     ):
         """
         Initialise MLP with skip connections.
@@ -39,6 +41,8 @@ class LinearSkipBlock(nn.Module):
         self.out_dim = out_dim
         self.activation_fns = activations
         self.dropout = dropout
+        self.batch_norm = batch_norm
+        self.batch_norm_output = batch_norm_output
         self._build_layers()
         self.skip = skip
 
@@ -50,6 +54,7 @@ class LinearSkipBlock(nn.Module):
         self.layers = nn.ModuleList()
         self.activations = nn.ModuleList()
         self.dropout_layers = nn.ModuleList()
+        self.bn_layers = nn.ModuleList()
 
         # Iterate over hidden dims
         # N.B We use lazy layers to avoid having to figure out the appropriate
@@ -58,10 +63,12 @@ class LinearSkipBlock(nn.Module):
             self.layers.append(nn.LazyLinear(out_features=self.hidden_dim[i]))
             self.activations.append(get_activations(self.activation_fns[i]))
             self.dropout_layers.append(nn.Dropout(self.dropout))
-
+            if self.batch_norm:
+                self.bn_layers.append(nn.BatchNorm1d(self.hidden_dim[i]))
         self.layers.append(nn.LazyLinear(self.out_dim))
         self.activations.append(get_activations(self.activation_fns[-1]))
-
+        if self.batch_norm_output:
+            self.bn_layers.append(nn.BatchNorm1d(self.out_dim))
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore
         """Implements the forward pass of the MLP decoder with skip connections.
 
@@ -70,16 +77,21 @@ class LinearSkipBlock(nn.Module):
         :return: Output tensor
         :rtype: torch.Tensor
         """
-        for i, layer in enumerate(self.layers):
-            prev = x
-            if i == len(self.layers) - 1:
-                # No dropout on final layer
-                return self.activations[i](layer(x))
-            x = self.dropout_layers[i](self.activations[i](layer(x)))
+        for i, layer in enumerate(self.layers[:-1]):
+            prev = x                
+            x = self.activations[i](layer(x))
+            if self.batch_norm:
+                x = self.bn_layers[i](x)
+            x = self.dropout_layers[i](x)
             if self.skip == "concat":
                 x = torch.cat([x, prev], dim=-1)
             elif self.skip == "sum":
                 x = x + prev
+                
+        x = self.activations[-1](self.layers[-1](x))
+        if self.batch_norm_output:
+            x = self.bn_layers[-1](x)
+        return x
 
 
 class MLPDecoder(nn.Module):
@@ -90,6 +102,8 @@ class MLPDecoder(nn.Module):
         activations: List[ActivationType],
         dropout: float,
         skip: bool = True,
+        batch_norm: bool = False,
+        batch_norm_output: bool = False,
         input: Optional[str] = None,
     ):
         """Initialise MLP decoder.
@@ -122,14 +136,17 @@ class MLPDecoder(nn.Module):
         if skip in {"sum", "concat"}:
             logger.info("Using skip connection in decoder.")
             self.layers = LinearSkipBlock(
-                self.hidden_dim, self.activations, out_dim, dropout, skip
+                self.hidden_dim, self.activations, out_dim, dropout, skip,
+                batch_norm=batch_norm,
+                batch_norm_output=batch_norm_output
             )
         else:
             # First layer
             decoder_layers = nn.ModuleList([nn.LazyLinear(self.hidden_dim[0])])
             decoder_layers.append(get_activations(self.activations[0]))
             decoder_layers.append(nn.Dropout(self.dropout))
-
+            if batch_norm:
+                decoder_layers.append(nn.BatchNorm1d(self.hidden_dim[0]))
             # Iterate over remaining layers
             for i, _ in enumerate(self.hidden_dim):
                 if i < len(self.hidden_dim) - 1:
@@ -140,12 +157,15 @@ class MLPDecoder(nn.Module):
                         get_activations(self.activations[i + 1])
                     )
                     decoder_layers.append(nn.Dropout(self.dropout))
+                    if batch_norm:
+                        decoder_layers.append(nn.BatchNorm1d(self.hidden_dim[i+1]))
 
             # Last layer
             decoder_layers.append(nn.LazyLinear(out_dim))
             decoder_layers.append(get_activations(self.activations[-1]))
+            if batch_norm_output:
+                decoder_layers.append(nn.BatchNorm1d(out_dim))
             self.layers = nn.Sequential(*decoder_layers)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of MLP decoder.
 
