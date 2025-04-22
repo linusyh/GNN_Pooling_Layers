@@ -593,6 +593,11 @@ class BenchMarkModel(BaseModel):
         """
         y = self.get_labels(batch)
         y_hat = self(batch)
+        
+        for key, tensor in y_hat.items():
+            self.log(f"{stage}/logit/{key}_avgmag", torch.mean(torch.abs(tensor.flatten())))
+            self.log(f"{stage}/logit/{key}_avg", torch.mean(tensor.flatten()))
+            self.log(f"{stage}/logit/{key}_std", torch.std(tensor.flatten()))
 
         loss = self.compute_loss(y_hat, y)
         self.log_metrics(loss, y_hat, y, stage, batch=batch)
