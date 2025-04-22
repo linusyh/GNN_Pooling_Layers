@@ -116,9 +116,10 @@ def validate_inverse_folding(cfg: DictConfig):
         )
         cfg.features.scalar_node_features.remove("amino_acid_one_hot")
     if "sidechain_torsions" in cfg.features.scalar_node_features:
-        raise ExperimentConfigurationError(
+        logger.warning(
             "You are launching an inverse folding experiment with sidechain_torsions as a feature. This will be removed."
         )
+        cfg.features.scalar_node_features.remove("sidechain_torsions")
     if cfg.features.scalar_node_features == []:
         raise ExperimentConfigurationError(
             "You are launching an inverse folding experiment with no scalar node features."
