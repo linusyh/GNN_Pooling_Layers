@@ -1,3 +1,22 @@
+# Publication Note
+
+## Environment Setup
+1. Customise `environment.yml` as needed, you must set "prefix" to a path that matches your own machine, and consider renaming the environment's name if you already have one named "protein".
+2. Create a conda environment based on `environment.yml`. 
+```bash
+#  In this repo
+conda env create -f environment.yml
+```
+3. Install ProteinWorkshop in this repo
+```bash
+#  In this repo
+python -m pip install -e .
+```
+
+## Training scripts
+Training scrips, including hyperparameters, can be found under the directory `scripts`.
+
+
 # Protein Workshop
 
 [![PyPI version](https://badge.fury.io/py/proteinworkshop.svg)](https://badge.fury.io/py/proteinworkshop)
