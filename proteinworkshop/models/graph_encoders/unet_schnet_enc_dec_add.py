@@ -95,10 +95,10 @@ class UnetSchNetModelEncDecAdd(SchNet):
         # Overwrite atom embedding and final predictor
         self.lin2 = torch.nn.LazyLinear(out_dim)
 
-        self.reds = ModuleList(
-            SimpleMLP(hidden_channels=hidden_channels)
-            for _ in range(num_up_downs)
-        )
+        # self.reds = ModuleList(
+        #     SimpleMLP(hidden_channels=hidden_channels)
+        #     for _ in range(num_up_downs)
+        # )
             
         self.layers_up = torch.nn.ModuleList(
             InteractionBlock(hidden_channels, num_gaussians,
@@ -178,12 +178,8 @@ class UnetSchNetModelEncDecAdd(SchNet):
                     s = nearest(pos[mask], pos[idx], graphs[mask], graphs[idx])
                     h = torch_scatter.scatter_add(h[mask], s, dim=0, dim_size=h.size(0), out = h[idx])
                 else:
-                    # node_features_aggregated = (
-                    #     torch_scatter.scatter_add(h[row], col, dim=0, dim_size=h.size(0)) + 
-                    #     torch_scatter.scatter_add(h[col], row, dim=0, dim_size=h.size(0))
-                    # )[idx]
-                    node_features_aggregated = torch_scatter.scatter_add(h[row], col, dim=0, dim_size=h.size(0))[idx]
-                    h = h[idx] + self.reds[i//2](node_features_aggregated)
+                    h = torch_scatter.scatter_add(h[row], col, dim=0, dim_size=h.size(0), out=h)[idx]
+                    # h = self.reds[i//2](h)
                 pos = pos[idx]
                 graphs = graphs[idx]
                 
@@ -195,17 +191,10 @@ class UnetSchNetModelEncDecAdd(SchNet):
             h = h + self.interactions[i](h, edge_index, edge_weight, edge_attr)
             
             if i % 2 == 0:
-                h = self.lin_transformations[i//2](h)
+                h = h + self.lin_transformations[i//2](h)
                 h = self.act(h)
 
         for i, layer in enumerate(self.layers_up):
-            # idx = stack_down_idx.pop()
-            # edge_index = stack_down_edges.pop()
-            # pos = batch.pos[new_prev_idx]
-            # u, v = edge_index
-            # edge_weight = (pos[u] - pos[v]).norm(dim=-1)
-            # edge_attr = self.distance_expansion(edge_weight)
-            # h[new_prev_idx] = h[new_prev_idx] + self.interactions[i](h[new_prev_idx], edge_index, edge_weight, edge_attr)
             h_new = stack_down_h.pop()
             h_new[idx] += h
             graphs = stack_down_batch.pop()

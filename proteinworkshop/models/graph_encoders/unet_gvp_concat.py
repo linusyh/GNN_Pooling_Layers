@@ -10,6 +10,7 @@ from torch_geometric.data import Batch
 import proteinworkshop.models.graph_encoders.layers.gvp as gvp
 from proteinworkshop.models.graph_encoders.components import blocks
 from proteinworkshop.models.utils import get_aggregation
+from proteinworkshop.utils.graph import compute_new_edges
 from proteinworkshop.types import EncoderOutput
 from torch_geometric.nn import fps, MLP, GINConv
 from torch_geometric.nn.pool import nearest
@@ -19,10 +20,6 @@ import graphein.protein.tensor.edges as gp
 import functools
 
 from torch_geometric.nn.models.schnet import InteractionBlock
-
-
-
-
 
 class UnetGVPGNNModel_Concat(torch.nn.Module):
     def __init__(
@@ -127,7 +124,7 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
         num_filters = 128
         hidden_channels = 128
         self.up_interactions = ModuleList()
-        for _ in range(4):
+        for _ in range(self.num_layers):
             block = InteractionBlock(hidden_channels, num_gaussians,
                                      num_filters, cutoff)
             self.up_interactions.append(block)
@@ -216,7 +213,7 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
         
 
         for i, layer in enumerate(self.layers_d):
-            if i % 2 == 0 and i>0:
+            if i % 2 == 1:
                 stack_down_h_V.append(h_V)
                 stack_down_batch.append(graphs)
                 stack_down_pos.append(pos)
@@ -254,8 +251,8 @@ class UnetGVPGNNModel_Concat(torch.nn.Module):
             h_V = layer(h_V, edge_index, h_E)
 
 
-        for i in range(self.num_layers-1):
-            if i % 2 == 0:
+        for i in range(self.num_layers):
+            if i % 2 == 1:
                 h_V_skip = stack_down_h_V.pop()
                 h_s = h_V_skip[0]
                 h_v = h_V_skip[1]
