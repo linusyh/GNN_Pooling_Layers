@@ -1,4 +1,11 @@
-# Publication Note
+# Geometric Graph U-Nets for Multi-Scale Protein Structure Modelling
+
+Code for the paper "[Multi-Scale Protein Structure Modelling with Geometric Graph U-Nets](https://arxiv.org/)", by Chang Liu*, Vivian Li*, Linus Leong, Vladimir Radenkovic, Pietro Liò, and Chaitanya K. Joshi (*Equal contributions), published at [Machine Learning in Structural Biology](https://mlsb.io/), 2025.
+
+![Geometric Graph U-Nets Pipeline](docs/source/_static/geom-graph-unet-pipeline.jpg)
+
+- Protein function is governed by a structural hierarchy. Local secondary structures fold into tertiary domains, which assemble into quaternary complexes to perform -omplex functions like allosteric signaling. Standard GNNs struggle to capture these long-range interactions. 
+- The Geometric Graph U-Net is a biologically inspired architecture that encodes a protein graph by progressive coarsening, moving from local representations to global ones. The decoder then refines this information, using residual connections to re-inject high-resolution local information at each level. Thus, the final representation integrates both global context and local geometric details.
 
 ## Environment Setup
 1. Customise `environment.yml` as needed, you must set "prefix" to a path that matches your own machine, and consider renaming the environment's name if you already have one named "protein".
@@ -16,6 +23,20 @@ python -m pip install -e .
 ## Training scripts
 Training scrips, including hyperparameters, can be found under the directory `scripts`.
 
+## Citation
+
+```bibtex
+@inproceedings{liu2025multi,
+  title={Multi-Scale Protein Structure Modelling with Geometric Graph U-Nets},
+  author={Chang Liu, Vivian Li, Linus Leong, Vladimir Radenkovic, Pietro Liò, Chaitanya K. Joshi},
+  booktitle={Machine Learning in Structural Biology},
+  year={2025},
+}
+```
+
+---
+
+(Original README from [ProteinWorkshop](https://github.com/a-r-j/ProteinWorkshop/)
 
 # Protein Workshop
 
